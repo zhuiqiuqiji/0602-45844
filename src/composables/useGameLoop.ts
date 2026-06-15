@@ -1,7 +1,10 @@
 import { type Ref, ref, onMounted, onUnmounted } from 'vue'
 import { useGameStore } from '@/stores/game'
 import {
-  POLE_PAIRS,
+  POLE_THICKNESS,
+  POLE_CLOSE_GAP,
+  DANCER_WIDTH,
+  POLE_LENGTH_RATIO,
   type PolePair,
   type Dancer,
   type Operator,
@@ -18,7 +21,6 @@ import {
   startDancerJump,
   updateDancer,
   resetDancerToStart,
-  checkCollision,
   createDustParticles,
   createLeafParticles,
   createSparkParticles,
@@ -47,6 +49,8 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   let animFrameId = 0
   let lastTime = 0
   let lastBeatTime = 0
+  let prevCanvasWidth = 0
+  let prevCanvasHeight = 0
 
   function initGame() {
     const canvas = canvasRef.value
@@ -54,6 +58,8 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
 
     const w = canvas.width
     const h = canvas.height
+    prevCanvasWidth = w
+    prevCanvasHeight = h
 
     poles.value = createPoles(w, h)
     poles.value = openPoles(poles.value)
@@ -82,6 +88,28 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     }
   }
 
+  function checkCollisionEveryFrame(canvasWidth: number): boolean {
+    if (dancer.value.state === 'jumping' || dancer.value.state === 'caught') return false
+
+    const poleLength = canvasWidth * POLE_LENGTH_RATIO
+
+    for (const pole of poles.value) {
+      const gap = pole.lowerY - pole.upperY - POLE_THICKNESS
+      const poleLeft = pole.x - poleLength / 2
+      const poleRight = pole.x + poleLength / 2
+
+      const dancerLeft = dancer.value.x - DANCER_WIDTH / 2
+      const dancerRight = dancer.value.x + DANCER_WIDTH / 2
+
+      if (dancerRight > poleLeft && dancerLeft < poleRight) {
+        if (gap < POLE_CLOSE_GAP * 4) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
   function togglePoles(canvasWidth: number) {
     if (polesOpen.value) {
       poles.value = closePoles(poles.value)
@@ -94,14 +122,6 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
           radius: 30,
           alpha: 0.8,
         })
-      }
-
-      if (dancer.value.state === 'standing') {
-        if (checkCollision(dancer.value, poles.value, canvasWidth)) {
-          dancer.value = { ...dancer.value, state: 'caught' }
-          setTimeout(() => store.gameOver(), 300)
-          return
-        }
       }
     } else {
       poles.value = openPoles(poles.value)
@@ -144,6 +164,13 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
       poles.value = updatePoles(poles.value, dt)
       const prevDancerState = dancer.value.state
       dancer.value = updateDancer(dancer.value, dt)
+
+      if (!polesOpen.value) {
+        if (checkCollisionEveryFrame(canvas.width)) {
+          dancer.value = { ...dancer.value, state: 'caught' }
+          setTimeout(() => store.gameOver(), 300)
+        }
+      }
 
       if (prevDancerState === 'jumping' && dancer.value.state === 'standing') {
         store.addScore()
@@ -196,17 +223,72 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     animFrameId = requestAnimationFrame(gameLoop)
   }
 
+  function rescaleEntities(oldW: number, oldH: number, newW: number, newH: number) {
+    const scaleX = newW / oldW
+    const scaleY = newH / oldH
+
+    poles.value = poles.value.map((p) => ({
+      ...p,
+      x: p.x * scaleX,
+      upperY: p.upperY * scaleY,
+      lowerY: p.lowerY * scaleY,
+      targetUpperY: p.targetUpperY * scaleY,
+      targetLowerY: p.targetLowerY * scaleY,
+    }))
+
+    dancer.value = {
+      ...dancer.value,
+      x: dancer.value.x * scaleX,
+      y: dancer.value.y * scaleY,
+      baseY: dancer.value.baseY * scaleY,
+      targetX: dancer.value.targetX * scaleX,
+      targetY: dancer.value.targetY * scaleY,
+      startX: dancer.value.startX * scaleX,
+      startY: dancer.value.startY * scaleY,
+    }
+
+    operators.value = operators.value.map((op) => ({
+      ...op,
+      x: op.x * scaleX,
+      y: op.y * scaleY,
+    }))
+
+    particles.value = particles.value.map((p) => ({
+      ...p,
+      x: p.x * scaleX,
+      y: p.y * scaleY,
+    }))
+
+    beatFlashes.value = beatFlashes.value.map((f) => ({
+      ...f,
+      x: f.x * scaleX,
+      y: f.y * scaleY,
+      radius: f.radius * ((scaleX + scaleY) / 2),
+    }))
+  }
+
   function resizeCanvas() {
     const canvas = canvasRef.value
     if (!canvas) return
     const container = canvas.parentElement
     if (!container) return
-    canvas.width = container.clientWidth
-    canvas.height = container.clientHeight
+
+    const oldW = prevCanvasWidth || canvas.width
+    const oldH = prevCanvasHeight || canvas.height
+    const newW = container.clientWidth
+    const newH = container.clientHeight
+
+    canvas.width = newW
+    canvas.height = newH
 
     if (store.gameState === 'idle') {
       initGame()
+    } else if (oldW > 0 && oldH > 0 && (oldW !== newW || oldH !== newH)) {
+      rescaleEntities(oldW, oldH, newW, newH)
     }
+
+    prevCanvasWidth = newW
+    prevCanvasHeight = newH
   }
 
   function startGame() {
