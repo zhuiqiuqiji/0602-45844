@@ -1,8 +1,6 @@
 import {
-  POLE_PAIRS,
   POLE_THICKNESS,
   POLE_OPEN_GAP,
-  POLE_CLOSE_GAP,
   POLE_LENGTH_RATIO,
   POLE_SPACING_RATIO,
   POLE_START_X_RATIO,
@@ -18,16 +16,22 @@ import {
   type Operator,
   type Particle,
   type BeatFlash,
+  type TimingPopup,
+  type GhostDancer,
+  type LevelConfig,
+  RHYTHM_LABELS,
+  GRADE_COLORS,
+  LEVELS,
 } from './constants'
 
-export function createPoles(canvasWidth: number, canvasHeight: number): PolePair[] {
+export function createPoles(canvasWidth: number, canvasHeight: number, count: number): PolePair[] {
   const poles: PolePair[] = []
   const startX = canvasWidth * POLE_START_X_RATIO
-  const spacing = canvasWidth * POLE_SPACING_RATIO
+  const spacing = (canvasWidth * 0.7) / (count + 1)
   const upperBaseY = canvasHeight * UPPER_POLE_BASE_Y_RATIO
   const lowerBaseY = canvasHeight * LOWER_POLE_BASE_Y_RATIO
 
-  for (let i = 0; i < POLE_PAIRS; i++) {
+  for (let i = 0; i < count; i++) {
     const x = startX + i * spacing
     poles.push({
       x,
@@ -42,9 +46,9 @@ export function createPoles(canvasWidth: number, canvasHeight: number): PolePair
   return poles
 }
 
-export function createDancer(canvasWidth: number, canvasHeight: number): Dancer {
+export function createDancer(canvasWidth: number, canvasHeight: number, poleCount: number): Dancer {
   const startX = canvasWidth * POLE_START_X_RATIO
-  const spacing = canvasWidth * POLE_SPACING_RATIO
+  const spacing = (canvasWidth * 0.7) / (poleCount + 1)
   const lowerBaseY = canvasHeight * LOWER_POLE_BASE_Y_RATIO
 
   const firstGapX = startX - spacing * 0.6
@@ -65,9 +69,9 @@ export function createDancer(canvasWidth: number, canvasHeight: number): Dancer 
   }
 }
 
-export function createOperators(canvasWidth: number, canvasHeight: number): Operator[] {
+export function createOperators(canvasWidth: number, canvasHeight: number, poleCount: number): Operator[] {
   const startX = canvasWidth * POLE_START_X_RATIO
-  const spacing = canvasWidth * POLE_SPACING_RATIO
+  const spacing = (canvasWidth * 0.7) / (poleCount + 1)
   const operatorY = canvasHeight * LOWER_POLE_BASE_Y_RATIO
 
   return [
@@ -79,7 +83,7 @@ export function createOperators(canvasWidth: number, canvasHeight: number): Oper
       side: 'left' as const,
     },
     {
-      x: startX + (POLE_PAIRS - 1) * spacing + spacing * 0.85,
+      x: startX + (poleCount - 1) * spacing + spacing * 0.85,
       y: operatorY,
       armAngle: 0.5,
       targetArmAngle: 0.5,
@@ -88,22 +92,28 @@ export function createOperators(canvasWidth: number, canvasHeight: number): Oper
   ]
 }
 
-export function openPoles(poles: PolePair[]): PolePair[] {
-  return poles.map((p) => ({
-    ...p,
-    state: 'opening' as const,
-    targetUpperY: p.upperY - POLE_OPEN_GAP / 2,
-    targetLowerY: p.lowerY + POLE_OPEN_GAP / 2,
-  }))
+export function openPoles(poles: PolePair[], indices?: number[]): PolePair[] {
+  return poles.map((p, i) => {
+    if (indices && !indices.includes(i)) return p
+    return {
+      ...p,
+      state: 'opening' as const,
+      targetUpperY: p.upperY - POLE_OPEN_GAP / 2,
+      targetLowerY: p.lowerY + POLE_OPEN_GAP / 2,
+    }
+  })
 }
 
-export function closePoles(poles: PolePair[]): PolePair[] {
-  return poles.map((p) => ({
-    ...p,
-    state: 'closing' as const,
-    targetUpperY: p.upperY + POLE_OPEN_GAP / 2,
-    targetLowerY: p.lowerY - POLE_OPEN_GAP / 2,
-  }))
+export function closePoles(poles: PolePair[], indices?: number[]): PolePair[] {
+  return poles.map((p, i) => {
+    if (indices && !indices.includes(i)) return p
+    return {
+      ...p,
+      state: 'closing' as const,
+      targetUpperY: p.upperY + POLE_OPEN_GAP / 2,
+      targetLowerY: p.lowerY - POLE_OPEN_GAP / 2,
+    }
+  })
 }
 
 export function updatePoles(poles: PolePair[], dt: number): PolePair[] {
@@ -137,20 +147,21 @@ export function startDancerJump(
   dancer: Dancer,
   poles: PolePair[],
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  poleCount: number
 ): Dancer {
   if (dancer.state !== 'standing') return dancer
 
-  const spacing = canvasWidth * POLE_SPACING_RATIO
+  const spacing = (canvasWidth * 0.7) / (poleCount + 1)
   const startX = canvasWidth * POLE_START_X_RATIO
   const nextGap = dancer.currentGap + 1
   let targetGap: number
   let targetX: number
   let targetY: number
 
-  if (nextGap >= POLE_PAIRS) {
+  if (nextGap >= poleCount) {
     targetGap = -1
-    targetX = startX + POLE_PAIRS * spacing + spacing * 0.6
+    targetX = startX + poleCount * spacing + spacing * 0.6
     targetY = dancer.baseY
   } else {
     targetGap = nextGap
@@ -203,38 +214,13 @@ export function updateDancer(dancer: Dancer, dt: number): Dancer {
   return dancer
 }
 
-export function checkCollision(
-  dancer: Dancer,
-  poles: PolePair[],
-  canvasWidth: number
-): boolean {
-  if (dancer.state === 'jumping') return false
-
-  const poleLength = canvasWidth * POLE_LENGTH_RATIO
-
-  for (const pole of poles) {
-    const gap = pole.lowerY - pole.upperY - POLE_THICKNESS
-    const poleLeft = pole.x - poleLength / 2
-    const poleRight = pole.x + poleLength / 2
-
-    if (
-      dancer.x + DANCER_WIDTH / 2 > poleLeft &&
-      dancer.x - DANCER_WIDTH / 2 < poleRight
-    ) {
-      if (gap < POLE_CLOSE_GAP * 3) {
-        return true
-      }
-    }
-  }
-  return false
-}
-
 export function resetDancerToStart(
   dancer: Dancer,
   canvasWidth: number,
-  canvasHeight: number
+  canvasHeight: number,
+  poleCount: number
 ): Dancer {
-  const spacing = canvasWidth * POLE_SPACING_RATIO
+  const spacing = (canvasWidth * 0.7) / (poleCount + 1)
   const startX = canvasWidth * POLE_START_X_RATIO
   const baseY = canvasHeight * LOWER_POLE_BASE_Y_RATIO - POLE_THICKNESS / 2
   const firstGapX = startX - spacing * 0.6
@@ -421,18 +407,21 @@ export function drawPoles(ctx: CanvasRenderingContext2D, poles: PolePair[], canv
   }
 }
 
-export function drawDancer(ctx: CanvasRenderingContext2D, dancer: Dancer) {
+export function drawDancer(ctx: CanvasRenderingContext2D, dancer: Dancer, isGhost = false) {
   const { x, y, state } = dancer
 
   ctx.save()
   ctx.translate(x, y)
+  ctx.globalAlpha = isGhost ? 0.4 : 1
 
-  if (state === 'caught') {
+  const bodyColor = isGhost ? COLORS.ghostDancer : COLORS.dancerBody
+
+  if (state === 'caught' && !isGhost) {
     ctx.fillStyle = 'rgba(255,0,0,0.3)'
     ctx.fillRect(-DANCER_WIDTH / 2 - 5, -DANCER_HEIGHT - 5, DANCER_WIDTH + 10, DANCER_HEIGHT + 10)
   }
 
-  ctx.fillStyle = COLORS.dancerBody
+  ctx.fillStyle = bodyColor
   ctx.beginPath()
   ctx.moveTo(0, -DANCER_HEIGHT)
   ctx.quadraticCurveTo(-DANCER_WIDTH / 2, -DANCER_HEIGHT * 0.8, -DANCER_WIDTH / 2, -DANCER_HEIGHT * 0.4)
@@ -444,29 +433,33 @@ export function drawDancer(ctx: CanvasRenderingContext2D, dancer: Dancer) {
   ctx.quadraticCurveTo(DANCER_WIDTH / 2, -DANCER_HEIGHT * 0.8, 0, -DANCER_HEIGHT)
   ctx.fill()
 
-  ctx.fillStyle = COLORS.dancerAccent
-  ctx.beginPath()
-  ctx.moveTo(-2, -DANCER_HEIGHT + 5)
-  ctx.lineTo(2, -DANCER_HEIGHT + 5)
-  ctx.lineTo(3, -DANCER_HEIGHT * 0.6)
-  ctx.lineTo(-3, -DANCER_HEIGHT * 0.6)
-  ctx.fill()
+  if (!isGhost) {
+    ctx.fillStyle = COLORS.dancerAccent
+    ctx.beginPath()
+    ctx.moveTo(-2, -DANCER_HEIGHT + 5)
+    ctx.lineTo(2, -DANCER_HEIGHT + 5)
+    ctx.lineTo(3, -DANCER_HEIGHT * 0.6)
+    ctx.lineTo(-3, -DANCER_HEIGHT * 0.6)
+    ctx.fill()
+  }
 
-  ctx.fillStyle = COLORS.dancerSkin
+  ctx.fillStyle = isGhost ? 'rgba(52,152,219,0.6)' : COLORS.dancerSkin
   ctx.beginPath()
   ctx.arc(0, -DANCER_HEIGHT - 5, 8, 0, Math.PI * 2)
   ctx.fill()
 
-  ctx.fillStyle = '#1a1a2e'
-  ctx.beginPath()
-  ctx.arc(-3, -DANCER_HEIGHT - 6, 1.5, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.beginPath()
-  ctx.arc(3, -DANCER_HEIGHT - 6, 1.5, 0, Math.PI * 2)
-  ctx.fill()
+  if (!isGhost) {
+    ctx.fillStyle = '#1a1a2e'
+    ctx.beginPath()
+    ctx.arc(-3, -DANCER_HEIGHT - 6, 1.5, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(3, -DANCER_HEIGHT - 6, 1.5, 0, Math.PI * 2)
+    ctx.fill()
+  }
 
   if (state === 'jumping') {
-    ctx.strokeStyle = COLORS.dancerSkin
+    ctx.strokeStyle = isGhost ? 'rgba(52,152,219,0.4)' : COLORS.dancerSkin
     ctx.lineWidth = 3
     ctx.beginPath()
     ctx.moveTo(-DANCER_WIDTH / 3, -DANCER_HEIGHT * 0.6)
@@ -579,29 +572,49 @@ export function drawBeatFlash(ctx: CanvasRenderingContext2D, flashes: BeatFlash[
   }
 }
 
+export function drawTimingPopups(ctx: CanvasRenderingContext2D, popups: TimingPopup[]) {
+  for (const p of popups) {
+    ctx.save()
+    const alpha = p.life / p.maxLife
+    ctx.globalAlpha = alpha
+    const offsetY = (1 - alpha) * -40
+
+    ctx.fillStyle = p.color
+    ctx.font = 'bold 22px "Ma Shan Zheng", cursive'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(p.text, p.x, p.y + offsetY)
+
+    ctx.restore()
+  }
+}
+
 export function drawRhythmIndicator(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   bpm: number,
   beatProgress: number,
-  isBeat: boolean
+  isBeat: boolean,
+  rhythmLabel?: string
 ) {
   ctx.save()
   ctx.translate(x, y)
 
+  const width = rhythmLabel ? 150 : 120
   ctx.fillStyle = 'rgba(0,0,0,0.4)'
   ctx.beginPath()
-  ctx.roundRect(-60, -20, 120, 40, 10)
+  ctx.roundRect(-width / 2, -20, width, 40, 10)
   ctx.fill()
 
   ctx.fillStyle = COLORS.textGold
   ctx.font = 'bold 14px "Noto Sans SC", sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(`${bpm} BPM`, 0, -3)
+  const label = rhythmLabel ? `${bpm} BPM ${rhythmLabel}` : `${bpm} BPM`
+  ctx.fillText(label, 0, -3)
 
-  const barWidth = 80
+  const barWidth = width - 40
   const barHeight = 4
   ctx.fillStyle = 'rgba(255,255,255,0.2)'
   ctx.beginPath()
@@ -623,4 +636,88 @@ export function drawRhythmIndicator(
   }
 
   ctx.restore()
+}
+
+export function drawLevelInfo(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  level: LevelConfig
+) {
+  ctx.save()
+  ctx.translate(x, y)
+
+  ctx.fillStyle = 'rgba(0,0,0,0.4)'
+  ctx.beginPath()
+  ctx.roundRect(-70, -12, 140, 24, 8)
+  ctx.fill()
+
+  ctx.fillStyle = COLORS.textWhite
+  ctx.font = '12px "Noto Sans SC", sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(`Lv.${level.id} ${level.name} | ${RHYTHM_LABELS[level.rhythmMode]}`, 0, 0)
+
+  ctx.restore()
+}
+
+export function drawTimingWindow(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  beatProgress: number,
+  windows: number[],
+  beatInterval: number
+) {
+  ctx.save()
+  ctx.translate(x, y)
+
+  const barWidth = 200
+  const barHeight = 12
+  const centerY = 0
+
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'
+  ctx.beginPath()
+  ctx.roundRect(-barWidth / 2, centerY - barHeight / 2, barWidth, barHeight, 4)
+  ctx.fill()
+
+  const goodZone = (windows[2] / beatInterval) * barWidth / 2
+  const greatZone = (windows[1] / beatInterval) * barWidth / 2
+  const perfectZone = (windows[0] / beatInterval) * barWidth / 2
+
+  ctx.fillStyle = 'rgba(52,152,219,0.3)'
+  ctx.fillRect(-goodZone, centerY - barHeight / 2, goodZone * 2, barHeight)
+
+  ctx.fillStyle = 'rgba(46,204,113,0.3)'
+  ctx.fillRect(-greatZone, centerY - barHeight / 2, greatZone * 2, barHeight)
+
+  ctx.fillStyle = 'rgba(241,196,15,0.4)'
+  ctx.fillRect(-perfectZone, centerY - barHeight / 2, perfectZone * 2, barHeight)
+
+  const cursorX = (beatProgress - 0.5) * barWidth
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(cursorX - 1, centerY - barHeight / 2 - 2, 2, barHeight + 4)
+
+  ctx.restore()
+}
+
+export function drawCountdown(ctx: CanvasRenderingContext2D, w: number, h: number, count: number) {
+  ctx.save()
+
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'
+  ctx.fillRect(0, 0, w, h)
+
+  ctx.fillStyle = COLORS.textGold
+  ctx.font = 'bold 120px "Ma Shan Zheng", cursive'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(count > 0 ? String(count) : '跳!', w / 2, h / 2)
+
+  ctx.restore()
+}
+
+export function updateTimingPopups(popups: TimingPopup[], dt: number): TimingPopup[] {
+  return popups
+    .map((p) => ({ ...p, life: p.life - dt * 0.002 }))
+    .filter((p) => p.life > 0)
 }

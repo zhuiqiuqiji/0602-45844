@@ -15,6 +15,7 @@ function handleStart() {
 }
 
 function handleRestart() {
+  store.stopCompetition()
   restartGame()
 }
 </script>

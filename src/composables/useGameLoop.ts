@@ -5,11 +5,17 @@ import {
   POLE_CLOSE_GAP,
   DANCER_WIDTH,
   POLE_LENGTH_RATIO,
+  GRADE_COLORS,
+  GRADE_POINTS,
+  RHYTHM_LABELS,
+  type TimingGrade,
+  type TimingResult,
   type PolePair,
   type Dancer,
   type Operator,
   type Particle,
   type BeatFlash,
+  type TimingPopup,
 } from '@/game/constants'
 import {
   createPoles,
@@ -32,7 +38,15 @@ import {
   drawParticles,
   drawBeatFlash,
   drawRhythmIndicator,
+  drawTimingPopups,
+  drawTimingWindow,
+  drawLevelInfo,
+  drawCountdown,
+  updateTimingPopups,
 } from '@/game/renderer'
+import { audioEngine } from '@/game/audio'
+import { rhythmEngine } from '@/game/rhythm'
+import { aiEngine } from '@/game/ai'
 
 export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   const store = useGameStore()
@@ -42,15 +56,22 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   const operators = ref<Operator[]>([])
   const particles = ref<Particle[]>([])
   const beatFlashes = ref<BeatFlash[]>([])
+  const timingPopups = ref<TimingPopup[]>([])
   const isBeat = ref(false)
   const beatProgress = ref(0)
   const polesOpen = ref(true)
+  const countdown = ref(0)
+  const ghostDancer = ref<Dancer | null>(null)
 
   let animFrameId = 0
   let lastTime = 0
   let lastBeatTime = 0
   let prevCanvasWidth = 0
   let prevCanvasHeight = 0
+  let poleCount = 4
+  let nextBeatInterval = 0
+  let variableBeatLabel = ''
+  let ghostFrameIndex = 0
 
   function initGame() {
     const canvas = canvasRef.value
@@ -61,30 +82,73 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     prevCanvasWidth = w
     prevCanvasHeight = h
 
-    poles.value = createPoles(w, h)
+    poleCount = store.currentLevel.polePairs
+    poles.value = createPoles(w, h, poleCount)
     poles.value = openPoles(poles.value)
-    dancer.value = createDancer(w, h)
-    operators.value = createOperators(w, h)
+    dancer.value = createDancer(w, h, poleCount)
+    operators.value = createOperators(w, h, poleCount)
     particles.value = []
     beatFlashes.value = []
+    timingPopups.value = []
     polesOpen.value = true
     lastBeatTime = performance.now()
+    nextBeatInterval = store.beatInterval
+    variableBeatLabel = ''
+    ghostFrameIndex = 0
+  }
+
+  function judgeTiming(): TimingGrade {
+    const windows = store.timingWindows
+    const elapsed = performance.now() - lastBeatTime
+    const interval = store.beatInterval
+    const distToBeat = Math.min(elapsed, interval - elapsed)
+
+    if (distToBeat <= windows[0]) return 'perfect'
+    if (distToBeat <= windows[1]) return 'great'
+    if (distToBeat <= windows[2]) return 'good'
+    return 'miss'
   }
 
   function handleJump() {
     if (store.gameState !== 'playing') return
+    if (countdown.value > 0) return
     if (dancer.value.state !== 'standing') return
 
     const canvas = canvasRef.value
     if (!canvas) return
 
-    dancer.value = startDancerJump(dancer.value, poles.value, canvas.width, canvas.height)
+    const grade = judgeTiming()
+    dancer.value = startDancerJump(dancer.value, poles.value, canvas.width, canvas.height, poleCount)
 
     if (dancer.value.state === 'jumping') {
+      store.addScore(grade)
+      store.recordReplayFrame('jump')
+
+      if (store.useAI) {
+        aiEngine.onPlayerGrade(grade)
+      }
+
       particles.value = [
         ...particles.value,
         ...createDustParticles(dancer.value.startX, dancer.value.startY),
       ]
+
+      timingPopups.value.push({
+        x: dancer.value.startX,
+        y: dancer.value.startY - 60,
+        text: grade === 'perfect' ? '完美!' : grade === 'great' ? '太棒了!' : grade === 'good' ? '不错' : '失误',
+        color: GRADE_COLORS[grade],
+        life: 1,
+        maxLife: 1,
+      })
+
+      if (store.soundEnabled) {
+        if (grade === 'perfect') audioEngine.playPerfect()
+        else if (grade === 'great') audioEngine.playGreat()
+        else if (grade === 'good') audioEngine.playGood()
+        else audioEngine.playMiss()
+        audioEngine.playJump()
+      }
     }
   }
 
@@ -111,6 +175,53 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   }
 
   function togglePoles(canvasWidth: number) {
+    if (store.useAI) {
+      const aiAction = aiEngine.generatePoleAction(poleCount, store.beatCount)
+      if (aiAction.action === 'close') {
+        poles.value = closePoles(poles.value, aiAction.poleIndices)
+        polesOpen.value = false
+      } else {
+        poles.value = openPoles(poles.value, aiAction.poleIndices)
+        polesOpen.value = true
+      }
+
+      for (const idx of aiAction.poleIndices) {
+        if (poles.value[idx]) {
+          beatFlashes.value.push({
+            x: poles.value[idx].x,
+            y: (poles.value[idx].upperY + poles.value[idx].lowerY) / 2,
+            radius: 30,
+            alpha: 0.6,
+          })
+        }
+      }
+      return
+    }
+
+    const rhythmAction = rhythmEngine.getCurrentPoleAction(store.beatCount, poleCount)
+
+    if (rhythmAction) {
+      if (rhythmAction.action === 'close') {
+        poles.value = closePoles(poles.value, rhythmAction.poleIndices)
+        polesOpen.value = false
+      } else {
+        poles.value = openPoles(poles.value, rhythmAction.poleIndices)
+        polesOpen.value = true
+      }
+
+      for (const idx of rhythmAction.poleIndices) {
+        if (poles.value[idx]) {
+          beatFlashes.value.push({
+            x: poles.value[idx].x,
+            y: (poles.value[idx].upperY + poles.value[idx].lowerY) / 2,
+            radius: 30,
+            alpha: 0.8,
+          })
+        }
+      }
+      return
+    }
+
     if (polesOpen.value) {
       poles.value = closePoles(poles.value)
       polesOpen.value = false
@@ -129,6 +240,20 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     }
   }
 
+  function updateGhost(elapsed: number) {
+    if (!store.ghost || !store.competitionMode) return
+
+    while (ghostFrameIndex < store.ghost.frames.length) {
+      const frame = store.ghost.frames[ghostFrameIndex]
+      if (frame.time <= elapsed) {
+        store.updateGhostScore(frame.score)
+        ghostFrameIndex++
+      } else {
+        break
+      }
+    }
+  }
+
   function gameLoop(time: number) {
     const canvas = canvasRef.value
     if (!canvas) return
@@ -138,8 +263,9 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     const dt = Math.min(time - lastTime, 50)
     lastTime = time
 
-    if (store.gameState === 'playing') {
-      const beatInterval = store.beatInterval
+    if (store.gameState === 'playing' && countdown.value <= 0) {
+      const currentInterval = store.useAI ? aiEngine.getCurrentBpm() : store.bpm
+      const beatInterval = rhythmEngine.getNextBeatInterval(currentInterval, store.beatCount)
       const elapsed = time - lastBeatTime
       beatProgress.value = Math.min(elapsed / beatInterval, 1)
 
@@ -147,6 +273,12 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
         lastBeatTime = time
         isBeat.value = true
         store.onBeat(time)
+
+        if (store.useAI) {
+          aiEngine.onBeat()
+          store.bpm = aiEngine.getCurrentBpm()
+        }
+
         togglePoles(canvas.width)
 
         operators.value = operators.value.map((op) => ({
@@ -155,6 +287,18 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
             ? -0.5 * (op.side === 'left' ? 1 : -1)
             : 0.3 * (op.side === 'left' ? 1 : -1),
         }))
+
+        const strong = store.beatCount % 4 === 0
+        if (store.soundEnabled) {
+          audioEngine.playBeat(strong)
+          if (!polesOpen.value) {
+            audioEngine.playBambooHit()
+          } else {
+            audioEngine.playBambooOpen()
+          }
+        }
+
+        variableBeatLabel = rhythmEngine.getVariableBeatLabel()
 
         setTimeout(() => {
           isBeat.value = false
@@ -168,12 +312,14 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
       if (!polesOpen.value) {
         if (checkCollisionEveryFrame(canvas.width)) {
           dancer.value = { ...dancer.value, state: 'caught' }
+          if (store.soundEnabled) audioEngine.playGameOver()
           setTimeout(() => store.gameOver(), 300)
         }
       }
 
       if (prevDancerState === 'jumping' && dancer.value.state === 'standing') {
-        store.addScore()
+        if (store.soundEnabled) audioEngine.playLand()
+
         particles.value = [
           ...particles.value,
           ...createDustParticles(dancer.value.x, dancer.value.y),
@@ -181,7 +327,7 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
         ]
 
         if (dancer.value.currentGap === -1) {
-          dancer.value = resetDancerToStart(dancer.value, canvas.width, canvas.height)
+          dancer.value = resetDancerToStart(dancer.value, canvas.width, canvas.height, poleCount)
         }
       }
 
@@ -199,25 +345,53 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
       beatFlashes.value = beatFlashes.value
         .map((f) => ({ ...f, alpha: f.alpha - 0.03, radius: f.radius + 2 }))
         .filter((f) => f.alpha > 0)
+
+      timingPopups.value = updateTimingPopups(timingPopups.value, dt)
+
+      if (store.competitionMode) {
+        updateGhost(time - store.gameStartTime)
+      }
     }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     drawBackground(ctx, canvas.width, canvas.height)
     drawPoles(ctx, poles.value, canvas.width)
     drawOperators(ctx, operators.value)
+
+    if (store.competitionMode && ghostDancer.value) {
+      drawDancer(ctx, ghostDancer.value, true)
+    }
+
     drawDancer(ctx, dancer.value)
     drawParticles(ctx, particles.value)
     drawBeatFlash(ctx, beatFlashes.value)
+    drawTimingPopups(ctx, timingPopups.value)
 
-    if (store.gameState === 'playing') {
+    if (store.gameState === 'playing' && countdown.value <= 0) {
       drawRhythmIndicator(
         ctx,
         canvas.width / 2,
         40,
         store.bpm,
         beatProgress.value,
-        isBeat.value
+        isBeat.value,
+        variableBeatLabel || RHYTHM_LABELS[store.rhythmMode]
       )
+
+      drawLevelInfo(ctx, canvas.width / 2, 80, store.currentLevel)
+
+      drawTimingWindow(
+        ctx,
+        canvas.width / 2,
+        canvas.height - 30,
+        beatProgress.value,
+        store.timingWindows,
+        store.beatInterval
+      )
+    }
+
+    if (countdown.value > 0) {
+      drawCountdown(ctx, canvas.width, canvas.height, countdown.value)
     }
 
     animFrameId = requestAnimationFrame(gameLoop)
@@ -265,6 +439,12 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
       y: f.y * scaleY,
       radius: f.radius * ((scaleX + scaleY) / 2),
     }))
+
+    timingPopups.value = timingPopups.value.map((p) => ({
+      ...p,
+      x: p.x * scaleX,
+      y: p.y * scaleY,
+    }))
   }
 
   function resizeCanvas() {
@@ -292,11 +472,36 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   }
 
   function startGame() {
+    audioEngine.init()
+
+    const level = store.currentLevel
+    poleCount = level.polePairs
+    rhythmEngine.setLevel(level)
+
+    if (store.useAI) {
+      aiEngine.init(level.initialBpm, level.maxBpm, level.difficulty === 'easy' ? 0.2 : level.difficulty === 'normal' ? 0.4 : level.difficulty === 'hard' ? 0.6 : 0.8)
+    }
+
+    if (store.customPattern && store.rhythmMode === 'custom') {
+      rhythmEngine.setCustomPattern(store.customPattern)
+    }
+
     store.startGame()
     initGame()
-    lastBeatTime = performance.now()
-    lastTime = performance.now()
-    polesOpen.value = true
+
+    if (store.soundEnabled) audioEngine.playStart()
+
+    countdown.value = 3
+    const countdownInterval = setInterval(() => {
+      countdown.value--
+      if (store.soundEnabled) audioEngine.playCountdown()
+      if (countdown.value <= 0) {
+        clearInterval(countdownInterval)
+        lastBeatTime = performance.now()
+        lastTime = performance.now()
+        polesOpen.value = true
+      }
+    }, 800)
   }
 
   function restartGame() {
