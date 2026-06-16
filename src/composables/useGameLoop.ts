@@ -47,9 +47,11 @@ import {
 import { audioEngine } from '@/game/audio'
 import { rhythmEngine } from '@/game/rhythm'
 import { aiEngine } from '@/game/ai'
+import { useMultiplayer } from '@/game/multiplayer'
 
 export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   const store = useGameStore()
+  const multiplayer = useMultiplayer()
 
   const poles = ref<PolePair[]>([])
   const dancer = ref<Dancer>({} as Dancer)
@@ -62,6 +64,7 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
   const polesOpen = ref(true)
   const countdown = ref(0)
   const ghostDancer = ref<Dancer | null>(null)
+  const remoteDancers = ref<Map<string, Dancer>>(new Map())
 
   let animFrameId = 0
   let lastTime = 0
@@ -95,6 +98,27 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     nextBeatInterval = store.beatInterval
     variableBeatLabel = ''
     ghostFrameIndex = 0
+
+    if (store.competitionMode && store.ghost) {
+      ghostDancer.value = createDancer(w, h, poleCount)
+    } else {
+      ghostDancer.value = null
+    }
+
+    if (multiplayer.mode.value !== 'offline') {
+      initRemoteDancers(w, h, poleCount)
+    } else {
+      remoteDancers.value.clear()
+    }
+  }
+
+  function initRemoteDancers(w: number, h: number, poleCount: number) {
+    remoteDancers.value.clear()
+    for (const player of multiplayer.remotePlayers.value) {
+      if (!player.isGameOver) {
+        remoteDancers.value.set(player.id, createDancer(w, h, poleCount))
+      }
+    }
   }
 
   function judgeTiming(): TimingGrade {
@@ -126,6 +150,10 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
 
       if (store.useAI) {
         aiEngine.onPlayerGrade(grade)
+      }
+
+      if (multiplayer.mode.value !== 'offline') {
+        multiplayer.sendJump(grade, store.score, store.combo)
       }
 
       particles.value = [
@@ -240,18 +268,89 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     }
   }
 
-  function updateGhost(elapsed: number) {
-    if (!store.ghost || !store.competitionMode) return
+  function updateGhost(elapsed: number, dt: number) {
+    if (!store.ghost || !store.competitionMode || !ghostDancer.value) return
+
+    const canvas = canvasRef.value
+    if (!canvas) return
 
     while (ghostFrameIndex < store.ghost.frames.length) {
       const frame = store.ghost.frames[ghostFrameIndex]
       if (frame.time <= elapsed) {
         store.updateGhostScore(frame.score)
+
+        if (ghostDancer.value && ghostDancer.value.state === 'standing') {
+          ghostDancer.value = startDancerJump(
+            ghostDancer.value,
+            poles.value,
+            canvas.width,
+            canvas.height,
+            poleCount
+          )
+        }
+
         ghostFrameIndex++
       } else {
         break
       }
     }
+
+    if (ghostDancer.value) {
+      const prevGhostState = ghostDancer.value.state
+      ghostDancer.value = updateDancer(ghostDancer.value, dt)
+
+      if (prevGhostState === 'jumping' && ghostDancer.value.state === 'standing') {
+        if (ghostDancer.value.currentGap === -1) {
+          ghostDancer.value = resetDancerToStart(
+            ghostDancer.value,
+            canvas.width,
+            canvas.height,
+            poleCount
+          )
+        }
+      }
+    }
+  }
+
+  function updateRemoteDancers(dt: number) {
+    if (multiplayer.mode.value === 'offline') return
+
+    const canvas = canvasRef.value
+    if (!canvas) return
+
+    for (const [playerId, remoteDancer] of remoteDancers.value) {
+      const player = multiplayer.remotePlayers.value.find((p) => p.id === playerId)
+      if (!player || player.isGameOver) continue
+
+      const prevState = remoteDancer.state
+      const updatedDancer = updateDancer(remoteDancer, dt)
+
+      if (prevState === 'jumping' && updatedDancer.state === 'standing') {
+        if (updatedDancer.currentGap === -1) {
+          remoteDancers.value.set(
+            playerId,
+            resetDancerToStart(updatedDancer, canvas.width, canvas.height, poleCount)
+          )
+        } else {
+          remoteDancers.value.set(playerId, updatedDancer)
+        }
+      } else {
+        remoteDancers.value.set(playerId, updatedDancer)
+      }
+    }
+  }
+
+  function triggerRemoteJump(playerId: string) {
+    const canvas = canvasRef.value
+    if (!canvas) return
+
+    const remoteDancer = remoteDancers.value.get(playerId)
+    if (!remoteDancer || remoteDancer.state !== 'standing') return
+
+    remoteDancers.value.set(
+      playerId,
+      startDancerJump(remoteDancer, poles.value, canvas.width, canvas.height, poleCount)
+    )
   }
 
   function gameLoop(time: number) {
@@ -313,6 +412,11 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
         if (checkCollisionEveryFrame(canvas.width)) {
           dancer.value = { ...dancer.value, state: 'caught' }
           if (store.soundEnabled) audioEngine.playGameOver()
+
+          if (multiplayer.mode.value !== 'offline') {
+            multiplayer.sendGameOver()
+          }
+
           setTimeout(() => store.gameOver(), 300)
         }
       }
@@ -349,7 +453,17 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
       timingPopups.value = updateTimingPopups(timingPopups.value, dt)
 
       if (store.competitionMode) {
-        updateGhost(time - store.gameStartTime)
+        updateGhost(time - store.gameStartTime, dt)
+      }
+
+      if (multiplayer.mode.value !== 'offline') {
+        if (multiplayer.mode.value === 'local_ai') {
+          const aiJumped = multiplayer.updateAI(store.beatInterval, dt)
+          if (aiJumped) {
+            triggerRemoteJump('ai_player')
+          }
+        }
+        updateRemoteDancers(dt)
       }
     }
 
@@ -360,6 +474,13 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
 
     if (store.competitionMode && ghostDancer.value) {
       drawDancer(ctx, ghostDancer.value, true)
+    }
+
+    for (const [playerId, remoteDancer] of remoteDancers.value) {
+      const player = multiplayer.remotePlayers.value.find((p) => p.id === playerId)
+      if (player && !player.isGameOver) {
+        drawDancer(ctx, remoteDancer, true)
+      }
     }
 
     drawDancer(ctx, dancer.value)
@@ -445,6 +566,32 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
       x: p.x * scaleX,
       y: p.y * scaleY,
     }))
+
+    if (ghostDancer.value) {
+      ghostDancer.value = {
+        ...ghostDancer.value,
+        x: ghostDancer.value.x * scaleX,
+        y: ghostDancer.value.y * scaleY,
+        baseY: ghostDancer.value.baseY * scaleY,
+        targetX: ghostDancer.value.targetX * scaleX,
+        targetY: ghostDancer.value.targetY * scaleY,
+        startX: ghostDancer.value.startX * scaleX,
+        startY: ghostDancer.value.startY * scaleY,
+      }
+    }
+
+    for (const [playerId, remoteDancer] of remoteDancers.value) {
+      remoteDancers.value.set(playerId, {
+        ...remoteDancer,
+        x: remoteDancer.x * scaleX,
+        y: remoteDancer.y * scaleY,
+        baseY: remoteDancer.baseY * scaleY,
+        targetX: remoteDancer.targetX * scaleX,
+        targetY: remoteDancer.targetY * scaleY,
+        startX: remoteDancer.startX * scaleX,
+        startY: remoteDancer.startY * scaleY,
+      })
+    }
   }
 
   function resizeCanvas() {
@@ -531,6 +678,16 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     window.addEventListener('resize', resizeCanvas)
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('pointerdown', onPointerDown)
+
+    multiplayer.setOnJumpCallback((playerId) => {
+      triggerRemoteJump(playerId)
+    })
+
+    multiplayer.setOnGameStartCallback(() => {
+      if (store.gameState === 'idle') {
+        startGame()
+      }
+    })
   })
 
   onUnmounted(() => {
@@ -538,14 +695,24 @@ export function useGameLoop(canvasRef: Ref<HTMLCanvasElement | null>) {
     window.removeEventListener('resize', resizeCanvas)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('pointerdown', onPointerDown)
+
+    if (multiplayer.mode.value === 'local_ai') {
+      multiplayer.stopLocalAI()
+    } else if (multiplayer.mode.value === 'online') {
+      multiplayer.leaveRoom()
+      multiplayer.disconnect()
+    }
   })
 
   return {
     poles,
     dancer,
     operators,
+    ghostDancer,
+    remoteDancers,
     startGame,
     restartGame,
     handleJump,
+    multiplayer,
   }
 }

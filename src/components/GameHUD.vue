@@ -1,7 +1,13 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useGameStore } from '@/stores/game'
+import { useMultiplayer } from '@/game/multiplayer'
 
 const store = useGameStore()
+const multiplayer = useMultiplayer()
+
+const isMultiplayer = computed(() => multiplayer.mode.value !== 'offline')
+const remotePlayers = computed(() => multiplayer.remotePlayers.value)
 </script>
 
 <template>
@@ -55,6 +61,33 @@ const store = useGameStore()
       <div class="text-xs" style="color: rgba(236,240,241,0.6);">对手得分</div>
       <div class="text-2xl font-bold font-calligraphy" style="color: #3498db;">
         {{ store.ghostScore }}
+      </div>
+    </div>
+  </div>
+
+  <div v-if="isMultiplayer && store.gameState === 'playing'" class="absolute top-4 right-4 z-10 pointer-events-none">
+    <div class="flex flex-col gap-2">
+      <div
+        v-for="player in remotePlayers"
+        :key="player.id"
+        class="px-4 py-2 rounded-lg"
+        :style="{
+          background: 'rgba(52,152,219,0.25)',
+          backdropFilter: 'blur(8px)',
+          border: player.isGameOver ? '1px solid rgba(231,76,60,0.5)' : '1px solid rgba(52,152,219,0.5)',
+          opacity: player.isGameOver ? 0.6 : 1,
+        }"
+      >
+        <div class="text-xs" style="color: rgba(236,240,241,0.6);">
+          {{ player.name }}
+          <span v-if="player.isGameOver" style="color: #e74c3c;">(已出局)</span>
+        </div>
+        <div class="text-2xl font-bold font-calligraphy" style="color: #3498db;">
+          {{ player.score }}
+        </div>
+        <div class="text-xs" style="color: rgba(46,204,113,0.8);">
+          {{ player.combo }}x 连击
+        </div>
       </div>
     </div>
   </div>

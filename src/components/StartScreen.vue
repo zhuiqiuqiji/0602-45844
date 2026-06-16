@@ -2,12 +2,14 @@
 import { ref } from 'vue'
 import { useGameStore } from '@/stores/game'
 import { LEVELS, RHYTHM_LABELS, DIFFICULTY_CONFIG, type LevelConfig } from '@/game/constants'
+import OnlineLobby from '@/components/OnlineLobby.vue'
 
 const store = useGameStore()
 const showLevels = ref(false)
 const showSettings = ref(false)
+const showOnline = ref(false)
 
-defineProps<{
+const props = defineProps<{
   onStart: () => void
 }>()
 
@@ -22,6 +24,11 @@ function toggleAI() {
 
 function toggleSound() {
   store.setSoundEnabled(!store.soundEnabled)
+}
+
+function handleOnlineStart() {
+  showOnline.value = false
+  props.onStart()
 }
 </script>
 
@@ -67,6 +74,14 @@ function toggleSound() {
           开始游戏
         </button>
       </div>
+
+      <button
+        @click="showOnline = true"
+        class="mb-4 px-6 py-2.5 rounded-lg text-sm font-bold cursor-pointer transition-all duration-200 hover:scale-105"
+        style="background: linear-gradient(135deg, rgba(52,152,219,0.5), rgba(41,128,185,0.3)); color: #3498db; border: 1px solid rgba(52,152,219,0.5);"
+      >
+        🌐 在线对战
+      </button>
 
       <div class="flex gap-3 mb-6">
         <button
@@ -191,5 +206,11 @@ function toggleSound() {
         返回
       </button>
     </template>
+
+    <OnlineLobby
+      v-if="showOnline"
+      @close="showOnline = false"
+      @start="handleOnlineStart"
+    />
   </div>
 </template>
